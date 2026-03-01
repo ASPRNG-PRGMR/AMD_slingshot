@@ -14,8 +14,14 @@ from sklearn.metrics import mean_squared_error, r2_score
 import warnings
 warnings.filterwarnings('ignore')
 
+from pathlib import Path
+BASE_DIR = Path(__file__).resolve().parent
+csv_path = BASE_DIR / "workload_dataset.csv"
+df.to_csv(csv_path, index=False)
+
 # ── LOAD DATASET ──────────────────────────────────────────────────────────────
-df = pd.read_csv('/home/noobiegg/Documents/AMD_shit/workload_dataset.csv')
+
+df = pd.read_csv(f'{BASE_DIR}/workload_dataset.csv')
 print(f"Loaded dataset: {df.shape[0]} samples, {df.shape[1]} columns\n")
 
 # ── FEATURES & TARGETS ────────────────────────────────────────────────────────
