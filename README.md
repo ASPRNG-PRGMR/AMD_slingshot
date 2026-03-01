@@ -107,7 +107,36 @@ heterowise/
 
 ---
 
-## 🛠 Installation
+
+## ⚙ Hardware Setup (TI Code Composer Studio)
+
+Firmware is pre-configured. No code editing required.
+
+### 🔌 Step 1 — Open Firmware in CCS
+
+1. Launch TI Code Composer Studio (CCS)
+2. Go to: **File → Open Folder**
+3. Select: `VoltGuard/firmware/`
+4. Ensure the project appears in Project Explorer
+
+### ⚡ Step 2 — Flash the MCU
+
+1. Connect the MSPM0G3507 LaunchPad via USB
+2. Expand the project
+3. Right-click: main_project
+4. Select: Flash
+5. The firmware will be programmed onto the microcontroller
+6. Ensure the device exits debug mode and runs normally after flashing
+
+### UART Verification
+
+1. Connect the device via USB
+2. Open Device Manager and locate the COM port labeled **Texas Instruments** — note the port number (e.g. `COM6`)
+3. Open a serial console (inside CCS or external) and configure it with the COM port you located above:
+
+---
+
+## 🖥 Software Setup (Python Backend)
 
 ### Requirements
 
@@ -130,10 +159,6 @@ sudo dnf install rocm-smi
 # Ubuntu / Debian
 sudo apt install rocm-smi
 ```
-
----
-
-## ▶️ Run Order
 
 ### Phase 1 — Generate Dataset
 
@@ -175,6 +200,17 @@ sudo python phase4_rocm_telemetry.py
 ```bash
 python heterowise_runtime.py
 ```
+---
+
+```
+Port:      COM6  (use the Texas Instruments port from Device Manager)
+Baud Rate: 115200
+(Keep other settings default)
+```
+
+You should see real-time telemetry output.
+
+---
 
 ---
 
