@@ -1,0 +1,8 @@
+scikit-learn
+numpy
+pandas
+streamlit
+matplotlib
+
+# Phase 4 (see README for ROCm-specific torch install)
+# torch — install separately with ROCm wheel, see README
