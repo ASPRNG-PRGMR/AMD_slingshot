@@ -64,7 +64,11 @@ df = pd.DataFrame({
 df['best_accelerator'] = df[['cpu_energy_j','gpu_energy_j','npu_energy_j']].idxmin(axis=1)\
     .str.replace('_energy_j','').str.upper()
 
-df.to_csv('/home/noobiegg/Documents/AMD_shit/workload_dataset.csv', index=False)
+from pathlib import Path
+BASE_DIR = Path(__file__).resolve().parent
+csv_path = BASE_DIR / "workload_dataset.csv"
+df.to_csv(csv_path, index=False)
+
 print(f"✅ Dataset saved: {len(df)} samples\n")
 print("Best accelerator distribution:")
 print(df['best_accelerator'].value_counts())
