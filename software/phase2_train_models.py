@@ -14,15 +14,13 @@ from sklearn.metrics import mean_squared_error, r2_score
 import warnings
 warnings.filterwarnings('ignore')
 
+# ── LOAD DATASET ──────────────────────────────────────────────────────────────
 from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
-csv_path = BASE_DIR / "workload_dataset.csv"
-df.to_csv(csv_path, index=False)
-
-# ── LOAD DATASET ──────────────────────────────────────────────────────────────
-
+csv_path = BASE_DIR /  "workload_dataset.csv"
 df = pd.read_csv(f'{BASE_DIR}/workload_dataset.csv')
 print(f"Loaded dataset: {df.shape[0]} samples, {df.shape[1]} columns\n")
+df.to_csv(csv_path, index=False)
 
 # ── FEATURES & TARGETS ────────────────────────────────────────────────────────
 FEATURES = ['flops', 'batch_size', 'precision_enc', 'param_count']
@@ -91,12 +89,13 @@ from pathlib import Path
 import pickle
 
 # Create project directory inside user's home
-base_dir = Path.home() / "HeteroWise" / "models"
-base_dir.mkdir(parents=True, exist_ok=True)
+base_dir = Path(__file__).resolve().parent
+models_dir = base_dir / "models"
+models_dir.mkdir(parents=True, exist_ok=True)
 
 # Save trained models
 for name, model in models.items():
-    with open(base_dir / f"{name}_model.pkl", "wb") as f:
+    with open(models_dir / f"{name}_model.pkl", "wb") as f:
         pickle.dump(model, f)
 
 # Also save feature list for consistent prediction
@@ -105,7 +104,7 @@ model_meta = {
     'targets': TARGETS,
 }
 
-with open(base_dir / "model_meta.pkl", "wb") as f:
+with open(models_dir/ "model_meta.pkl", "wb") as f:
     pickle.dump(model_meta, f)
 
 print("\n" + "=" * 60)
@@ -115,7 +114,7 @@ print("=" * 60)
 for name, res in results.items():
     print(f"  {name.upper():5s}  R²={res['R2']:.4f}  RMSE={res['RMSE']:.4f} J")
 
-print(f"\n✅ Models saved to: {base_dir}")
+print(f"\n✅ Models saved to: {models_dir}")
 
 # ── QUICK SANITY CHECK ─────────────────────────────────────────────────────────
 print("\n" + "=" * 60)
