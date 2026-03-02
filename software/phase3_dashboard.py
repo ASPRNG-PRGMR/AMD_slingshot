@@ -12,6 +12,7 @@ import pickle
 import os
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from pathlib import Path
 
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -66,8 +67,8 @@ st.markdown("""
 # ── LOAD MODELS ───────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_models():
-    base = os.path.dirname(os.path.abspath(__file__))
-    model_dir = os.path.join(base, 'models')
+    base =  Path(__file__).resolve().parent
+    model_dir = base / 'models'
     models = {}
     for hw in ['cpu', 'gpu', 'npu']:
         with open(f'{model_dir}/{hw}_model.pkl', 'rb') as f:
