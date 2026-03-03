@@ -155,10 +155,10 @@ extern "C" {
 #define ADC12_0_ADCMEM_0                                      DL_ADC12_MEM_IDX_0
 #define ADC12_0_ADCMEM_0_REF                     DL_ADC12_REFERENCE_VOLTAGE_VDDA
 #define ADC12_0_ADCMEM_0_REF_VOLTAGE_V                                       3.3
-#define GPIO_ADC12_0_C7_PORT                                               GPIOA
-#define GPIO_ADC12_0_C7_PIN                                       DL_GPIO_PIN_22
-#define GPIO_ADC12_0_IOMUX_C7                                    (IOMUX_PINCM47)
-#define GPIO_ADC12_0_IOMUX_C7_FUNC                (IOMUX_PINCM47_PF_UNCONNECTED)
+#define GPIO_ADC12_0_C2_PORT                                               GPIOA
+#define GPIO_ADC12_0_C2_PIN                                       DL_GPIO_PIN_25
+#define GPIO_ADC12_0_IOMUX_C2                                    (IOMUX_PINCM55)
+#define GPIO_ADC12_0_IOMUX_C2_FUNC                (IOMUX_PINCM55_PF_UNCONNECTED)
 
 
 

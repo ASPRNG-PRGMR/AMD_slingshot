@@ -3,7 +3,7 @@
  *
  * Target MCU : MSPM0G3507 (or MSPM0G1507)
  * Display    : ILI9341  240×320  via SPI
- * Input      : Joystick X-axis via ADC12  (Y-axis optional)
+ * Input      : Joystick X-axis via ADC12
  * Comms      : UART 115200 8N1  bidirectional with PC runtime
  */
 
@@ -49,10 +49,12 @@
 /* ================================================================
  * ADC / JOYSTICK
  * ================================================================ */
-#define ADC_MAX         4095U
-#define ADC_MID         2047U
-#define ADC_DEADZONE    200U
+#define JOY_DEAD_LOW    2700U
+#define JOY_DEAD_HIGH   3300U
+#define JOY_LEFT_FLOOR  100U
+#define JOY_RIGHT_CEIL  4000U
 
+/* Budget range */
 #define BUDGET_MIN      1U
 #define BUDGET_MAX      20U
 #define BUDGET_DEFAULT  5U
@@ -60,18 +62,41 @@
 #define MODE_COUNT      4U
 
 /* ================================================================
+ * MODE DEFINITIONS
+ *
+ * gMode encodes the active accelerator selection shown in the
+ * header.  A separate gJoyActive / gJoyIdleCount mechanism
+ * controls whether the label reads AUTO, JOY, or a countdown.
+ * ================================================================ */
+#define DISPLAY_MODE_AUTO   0   /* no joystick activity             */
+#define DISPLAY_MODE_JOY    1   /* joystick currently active        */
+#define DISPLAY_MODE_CD3    2   /* countdown 3 (1st idle refresh)   */
+#define DISPLAY_MODE_CD2    3   /* countdown 2                      */
+#define DISPLAY_MODE_CD1    4   /* countdown 1                      */
+
+/* How many consecutive idle refreshes before reverting to AUTO.
+ * Must match the 3-step countdown (CD3 → CD2 → CD1 → AUTO). */
+#define JOY_IDLE_REVERT     3U
+
+/* ================================================================
  * UART RX BUFFER
  * ================================================================ */
 #define RX_BUF_LEN      128U
 
 /* ================================================================
- * SIMULATION
+ * SIMULATION PARAMETERS
  * ================================================================ */
-#define SIM_HW          "NPU"
-#define SIM_ENERGY_EJ   320UL
-#define SIM_TEMP_C      38U
-#define SIM_CLK_MHZ     800U
 #define SIM_TIMEOUT_CYCLES  4U
+
+/* Accelerator pool cycled during simulation */
+static const char * const SIM_HW_POOL[] = { "NPU", "GPU", "CPU" };
+#define SIM_HW_POOL_LEN     3U
+
+/* Base values – wobble added each tick */
+/* NOTE: SIM_ENERGY_BASE is intentionally removed; energy is derived      */
+/*       from the live budget so the remaining bar always has content.     */
+#define SIM_TEMP_BASE       38U         /* °C                              */
+#define SIM_CLK_BASE        800U        /* MHz                             */
 
 /* ================================================================
  * GLOBAL STATE
@@ -80,7 +105,10 @@ volatile bool     gAdcReady  = false;
 volatile uint16_t gAdcResult = 0;
 
 volatile uint8_t  gBudget    = BUDGET_DEFAULT;
-volatile uint8_t  gMode      = 0;
+
+/* Display-mode state (see DISPLAY_MODE_* above) */
+static uint8_t    gDisplayMode  = DISPLAY_MODE_AUTO;
+static uint8_t    gJoyIdleCount = 0;    /* refreshes elapsed without joystick */
 
 volatile char     gHW[4]     = "---";
 volatile uint32_t gEnergyEJ  = 0;
@@ -137,8 +165,8 @@ static void uart_send_status(void)
 {
     uart_send_string("{\"budget\":");
     uart_send_uint(gBudget);
-    uart_send_string(",\"mode\":");
-    uart_send_uint(gMode);
+    uart_send_string(",\"dispmode\":");
+    uart_send_uint(gDisplayMode);
     uart_send_string(",\"joy\":");
     uart_send_uint(gAdcResult);
     uart_send_string("}\r\n");
@@ -154,12 +182,8 @@ static void parse_pc_line(const char *line)
     p = strstr(line, "\"hw\":\"");
     if (p) {
         p += 6;
-        gHW[0] = p[0];
-        gHW[1] = p[1];
-        gHW[2] = p[2];
-        gHW[3] = '\0';
+        gHW[0] = p[0]; gHW[1] = p[1]; gHW[2] = p[2]; gHW[3] = '\0';
     }
-
     p = strstr(line, "\"ej\":");
     if (p) {
         p += 5;
@@ -167,7 +191,6 @@ static void parse_pc_line(const char *line)
         while (*p >= '0' && *p <= '9') { v = v*10 + (uint32_t)(*p - '0'); p++; }
         gEnergyEJ = v;
     }
-
     p = strstr(line, "\"temp\":");
     if (p) {
         p += 7;
@@ -175,7 +198,6 @@ static void parse_pc_line(const char *line)
         while (*p >= '0' && *p <= '9') { v = v*10 + (uint32_t)(*p - '0'); p++; }
         gTempC = (uint16_t)v;
     }
-
     p = strstr(line, "\"clk\":");
     if (p) {
         p += 6;
@@ -183,27 +205,44 @@ static void parse_pc_line(const char *line)
         while (*p >= '0' && *p <= '9') { v = v*10 + (uint32_t)(*p - '0'); p++; }
         gClkMHz = (uint16_t)v;
     }
-
     gRxReady   = true;
     gNoRxCount = 0;
 }
 
 /* ================================================================
  * SIMULATION FILL
+ *
+ * All four data fields wobble independently each tick so the
+ * display visibly animates while PC data is absent:
+ *
+ *   Accelerator : cycles NPU → GPU → CPU every 4 ticks
+ *   Energy      : ±35 units around SIM_ENERGY_BASE
+ *   Temperature : +0..+3 °C sawtooth on top of SIM_TEMP_BASE
+ *   Clock       : +0..+150 MHz sawtooth on top of SIM_CLK_BASE
  * ================================================================ */
 static void apply_simulation(void)
 {
     static uint8_t sim_tick = 0;
     sim_tick++;
 
-    gHW[0] = 'N'; gHW[1] = 'P'; gHW[2] = 'U'; gHW[3] = '\0';
+    /* Accelerator – rotate every 4 ticks */
+    uint8_t hw_idx = (sim_tick >> 2) % SIM_HW_POOL_LEN;
+    const char *hw = SIM_HW_POOL[hw_idx];
+    gHW[0] = hw[0]; gHW[1] = hw[1]; gHW[2] = hw[2]; gHW[3] = '\0';
 
-    uint32_t energy_base = SIM_ENERGY_EJ;
-    int8_t   wobble      = (int8_t)((sim_tick & 0x07) * 10) - 35;
-    gEnergyEJ = (uint32_t)((int32_t)energy_base + wobble);
+    /* Energy: 20–80 % of the current budget, oscillating each tick.
+     * Keeping it strictly below budget_ej ensures the remaining bar
+     * always has a visible fill.  The 8-step sawtooth gives smooth
+     * animation without ever reaching 100 % (which would empty the bar). */
+    uint32_t budget_ej = (uint32_t)gBudget * 10000UL;
+    uint32_t pct = 20UL + (uint32_t)(sim_tick & 0x07) * 8UL;   /* 20..76 % */
+    gEnergyEJ = budget_ej * pct / 100UL;
 
-    gTempC  = (uint16_t)(SIM_TEMP_C  + (sim_tick & 0x03));
-    gClkMHz = (uint16_t)(SIM_CLK_MHZ + (uint16_t)((sim_tick & 0x03) * 50));
+    /* Temperature: 0–3 °C sawtooth */
+    gTempC = (uint16_t)(SIM_TEMP_BASE + (sim_tick & 0x03));
+
+    /* Clock: 0–150 MHz staircase (50 MHz steps, 4-tick period) */
+    gClkMHz = (uint16_t)(SIM_CLK_BASE + (uint16_t)((sim_tick & 0x03) * 50U));
 }
 
 /* ================================================================
@@ -230,12 +269,10 @@ static void lcd_reset(void)
 static void ili9341_init(void)
 {
     lcd_reset();
-    lcd_cmd(0x11);
-    delay_ms(120);
+    lcd_cmd(0x11); delay_ms(120);
     lcd_cmd(0x3A); lcd_data(0x55);
     lcd_cmd(0x36); lcd_data(0xC8);
-    lcd_cmd(0x29);
-    delay_ms(20);
+    lcd_cmd(0x29); delay_ms(20);
 }
 
 static void lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
@@ -254,8 +291,7 @@ static void lcd_draw_pixel(uint16_t x, uint16_t y, uint16_t color)
     if (x >= 240 || y >= 320) return;
     lcd_set_window(x, y, x, y);
     DC_HIGH();
-    spi_tx((uint8_t)(color >> 8));
-    spi_tx((uint8_t)(color & 0xFF));
+    spi_tx((uint8_t)(color >> 8)); spi_tx((uint8_t)(color & 0xFF));
 }
 
 static void lcd_fill(uint16_t color)
@@ -263,8 +299,7 @@ static void lcd_fill(uint16_t color)
     lcd_set_window(0, 0, 239, 319);
     DC_HIGH();
     for (uint32_t i = 0; i < 76800UL; i++) {
-        spi_tx((uint8_t)(color >> 8));
-        spi_tx((uint8_t)(color & 0xFF));
+        spi_tx((uint8_t)(color >> 8)); spi_tx((uint8_t)(color & 0xFF));
     }
 }
 
@@ -274,8 +309,7 @@ static void lcd_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16
     lcd_set_window(x, y, (uint16_t)(x+w-1), (uint16_t)(y+h-1));
     DC_HIGH();
     for (uint32_t i = 0; i < (uint32_t)w*h; i++) {
-        spi_tx((uint8_t)(color >> 8));
-        spi_tx((uint8_t)(color & 0xFF));
+        spi_tx((uint8_t)(color >> 8)); spi_tx((uint8_t)(color & 0xFF));
     }
 }
 
@@ -292,13 +326,7 @@ static void lcd_draw_bar(uint16_t x, uint16_t y,
 }
 
 /* ================================================================
- * 5×7 FONT  — ALL BITMAPS VERIFIED
- *
- * Column-based, LSB = top pixel.
- * Fixes vs original:
- *   [13] C  — was B's bitmap,   now correct C
- *   [29] Y  — was ')' shape,    now correct Y
- *   [33] B  — was F's bitmap,   now correct B
+ * 5x7 FONT  — ALL BITMAPS VERIFIED
  * ================================================================ */
 static const uint8_t font5x7[][5] = {
     {0x00, 0x00, 0x00, 0x00, 0x00}, /*  0: space */
@@ -314,7 +342,7 @@ static const uint8_t font5x7[][5] = {
     {0x06, 0x49, 0x49, 0x29, 0x1E}, /* 10: 9     */
     {0x00, 0x36, 0x36, 0x00, 0x00}, /* 11: :     */
     {0x7C, 0x12, 0x11, 0x12, 0x7C}, /* 12: A     */
-    {0x3E, 0x41, 0x41, 0x41, 0x22}, /* 13: C     ← FIXED */
+    {0x3E, 0x41, 0x41, 0x41, 0x22}, /* 13: C     */
     {0x7F, 0x41, 0x41, 0x22, 0x1C}, /* 14: D     */
     {0x7F, 0x49, 0x49, 0x49, 0x41}, /* 15: E     */
     {0x7F, 0x09, 0x09, 0x09, 0x01}, /* 16: F     */
@@ -330,12 +358,11 @@ static const uint8_t font5x7[][5] = {
     {0x46, 0x49, 0x49, 0x49, 0x31}, /* 26: S     */
     {0x01, 0x01, 0x7F, 0x01, 0x01}, /* 27: T     */
     {0x3F, 0x40, 0x40, 0x40, 0x3F}, /* 28: V     */
-    {0x07, 0x08, 0x70, 0x08, 0x07}, /* 29: Y     ← FIXED */
+    {0x07, 0x08, 0x70, 0x08, 0x07}, /* 29: Y     */
     {0x00, 0x00, 0x00, 0x00, 0x00}, /* 30: /     (blank slot) */
     {0x00, 0x00, 0x7F, 0x00, 0x00}, /* 31: l     */
     {0x63, 0x14, 0x08, 0x14, 0x63}, /* 32: x / X */
-    /* ---- HeteroWise additions ---- */
-    {0x7F, 0x49, 0x49, 0x49, 0x36}, /* 33: B     ← FIXED */
+    {0x7F, 0x49, 0x49, 0x49, 0x36}, /* 33: B     */
     {0x20, 0x40, 0x41, 0x3F, 0x01}, /* 34: J     */
     {0x7F, 0x08, 0x14, 0x22, 0x41}, /* 35: K     */
     {0x3F, 0x40, 0x40, 0x40, 0x3F}, /* 36: U     */
@@ -422,7 +449,35 @@ static void lcd_draw_number(uint16_t x, uint16_t y, uint32_t num,
 }
 
 /* ================================================================
- * HETEROWISE DISPLAY
+ * MODE LABEL HELPERS
+ *
+ * mode_label() returns the 4-char string rendered in the header.
+ * mode_label_color() makes the countdown digits amber so they
+ * stand out from the normal yellow AUTO/JOY labels.
+ * ================================================================ */
+static const char *mode_label(void)
+{
+    switch (gDisplayMode) {
+        case DISPLAY_MODE_JOY:  return "JOY ";
+        case DISPLAY_MODE_CD3:  return "3   ";
+        case DISPLAY_MODE_CD2:  return "2   ";
+        case DISPLAY_MODE_CD1:  return "1   ";
+        default:                return "AUTO";   /* DISPLAY_MODE_AUTO */
+    }
+}
+
+static uint16_t mode_label_color(void)
+{
+    /* Countdown steps shown in amber to signal "reverting soon" */
+    if (gDisplayMode == DISPLAY_MODE_CD3 ||
+        gDisplayMode == DISPLAY_MODE_CD2 ||
+        gDisplayMode == DISPLAY_MODE_CD1)
+        return COL_AMBER;
+    return COL_YELLOW;
+}
+
+/* ================================================================
+ * HW COLOR HELPER
  * ================================================================ */
 static uint16_t hw_color(void)
 {
@@ -432,51 +487,44 @@ static uint16_t hw_color(void)
     return COL_DIM;
 }
 
-static const char *mode_str(void)
-{
-    switch (gMode) {
-        case 1:  return "NPU ";
-        case 2:  return "GPU ";
-        case 3:  return "CPU ";
-        default: return "AUTO";
-    }
-}
-
+/* ================================================================
+ * SCREEN DRAWING
+ * ================================================================ */
 static void draw_screen_skeleton(void)
 {
     lcd_fill(COL_BG);
-
-    /* Title bar */
     lcd_fill_rect(0, 0, 240, 28, COL_ACCENT);
     lcd_draw_string(4,  8, "HETEROWISE", COL_TEXT, COL_ACCENT, 2);
-    lcd_draw_string(152, 10, "MODE:", COL_DIM,  COL_ACCENT, 1);
-    lcd_draw_string(188, 10, mode_str(), COL_YELLOW, COL_ACCENT, 1);
-
-    /* Panel dividers */
+    lcd_draw_string(152, 10, "MODE:", COL_DIM, COL_ACCENT, 1);
+    lcd_draw_string(188, 10, mode_label(), mode_label_color(), COL_ACCENT, 1);
     lcd_fill_rect(0,  28, 240, 1, COL_ACCENT);
     lcd_fill_rect(0,  80, 240, 1, COL_DARKGRAY);
     lcd_fill_rect(0, 130, 240, 1, COL_DARKGRAY);
     lcd_fill_rect(0, 180, 240, 1, COL_DARKGRAY);
     lcd_fill_rect(0, 230, 240, 1, COL_DARKGRAY);
     lcd_fill_rect(0, 280, 240, 1, COL_ACCENT);
-
-    /* Panel labels */
     lcd_draw_string(6,  32, "ACCELERATOR", COL_DIM, COL_BG, 1);
     lcd_draw_string(6,  84, "ENERGY",      COL_DIM, COL_BG, 1);
     lcd_draw_string(6, 134, "BUDGET",      COL_DIM, COL_BG, 1);
-    lcd_draw_string(130, 134, "JOY ->",    COL_DIM, COL_BG, 1);
     lcd_draw_string(6, 184, "TEMPERATURE", COL_DIM, COL_BG, 1);
     lcd_draw_string(6, 234, "CLOCK",       COL_DIM, COL_BG, 1);
     lcd_draw_string(6, 284, "REMAINING:",  COL_DIM, COL_BG, 1);
 }
 
+static void draw_title_mode(void)
+{
+    /* Clear the 4-char label area and repaint with current mode */
+    lcd_fill_rect(188, 6, 48, 16, COL_ACCENT);
+    lcd_draw_string(188, 10, mode_label(), mode_label_color(), COL_ACCENT, 1);
+}
+
 static void draw_values(void)
 {
-    /* ── Panel A: Accelerator ─────────────────────────────────── */
+    /* Panel A: Accelerator */
     lcd_fill_rect(6, 46, 160, 30, COL_BG);
     lcd_draw_string(6, 48, (const char *)gHW, hw_color(), COL_BG, 3);
 
-    /* ── Panel B: Energy ─────────────────────────────────────── */
+    /* Panel B: Energy */
     lcd_fill_rect(6, 98, 230, 28, COL_BG);
     {
         uint32_t ej       = gEnergyEJ;
@@ -499,13 +547,12 @@ static void draw_values(void)
     {
         uint32_t max_ej = (uint32_t)BUDGET_MAX * 10000UL;
         uint16_t fill_w = (max_ej > 0)
-            ? (uint16_t)((uint32_t)200UL * gEnergyEJ / max_ej)
-            : 0;
+            ? (uint16_t)((uint32_t)200UL * gEnergyEJ / max_ej) : 0;
         if (fill_w > 200) fill_w = 200;
         lcd_draw_bar(6, 122, 200, 5, fill_w, hw_color(), COL_DARKGRAY);
     }
 
-    /* ── Panel C: Budget ─────────────────────────────────────── */
+    /* Panel C: Budget */
     lcd_fill_rect(6, 148, 120, 24, COL_BG);
     lcd_draw_number(6, 150, gBudget, COL_YELLOW, COL_BG, 2);
     lcd_draw_string(30, 150, "J MAX", COL_DIM, COL_BG, 2);
@@ -515,7 +562,7 @@ static void draw_values(void)
         lcd_draw_bar(6, 170, 200, 5, fill_w, COL_YELLOW, COL_DARKGRAY);
     }
 
-    /* ── Panel D: Temperature ────────────────────────────────── */
+    /* Panel D: Temperature */
     lcd_fill_rect(6, 198, 230, 28, COL_BG);
     {
         uint16_t tcol = (gTempC >= 80) ? COL_WARN : COL_OK;
@@ -525,51 +572,133 @@ static void draw_values(void)
             lcd_draw_string(80, 200, "HOT", COL_WARN, COL_BG, 1);
         }
         uint16_t fill_w = (gTempC <= 100)
-            ? (uint16_t)((uint32_t)200UL * gTempC / 100UL)
-            : 200;
+            ? (uint16_t)((uint32_t)200UL * gTempC / 100UL) : 200;
         lcd_draw_bar(6, 220, 200, 5, fill_w, tcol, COL_DARKGRAY);
     }
 
-    /* ── Panel E: Clock ──────────────────────────────────────── */
+    /* Panel E: Clock */
     lcd_fill_rect(6, 248, 230, 24, COL_BG);
     lcd_draw_number(6, 250, gClkMHz, COL_CYAN, COL_BG, 2);
     lcd_draw_string(60, 250, "MHZ", COL_DIM, COL_BG, 2);
-    lcd_draw_string(140, 250, mode_str(), COL_YELLOW, COL_BG, 2);
 
-    /* ── Bottom: remaining budget bar ───────────────────────── */
+    /* Bottom: remaining budget bar */
     {
         uint32_t budget_ej = (uint32_t)gBudget * 10000UL;
-        uint32_t remaining = (gEnergyEJ < budget_ej)
-            ? (budget_ej - gEnergyEJ)
-            : 0UL;
+        uint32_t remaining = (gEnergyEJ < budget_ej) ? (budget_ej - gEnergyEJ) : 0UL;
         uint16_t fill_w = (budget_ej > 0)
-            ? (uint16_t)((uint32_t)228UL * remaining / budget_ej)
-            : 0;
+            ? (uint16_t)((uint32_t)228UL * remaining / budget_ej) : 0;
         if (fill_w > 228) fill_w = 228;
         uint16_t bcol = (remaining == 0) ? COL_WARN : COL_AMBER;
         lcd_draw_bar(6, 294, 228, 14, fill_w, bcol, COL_DARKGRAY);
     }
 }
 
-static void draw_title_mode(void)
-{
-    lcd_fill_rect(188, 6, 48, 16, COL_ACCENT);
-    lcd_draw_string(188, 10, mode_str(), COL_YELLOW, COL_ACCENT, 1);
-}
-
 /* ================================================================
  * JOYSTICK PROCESSING
+ *
+ * joystick_update() returns true if the joystick is outside the
+ * dead-zone this tick (i.e. the user is actively pushing it).
+ * The main loop uses this return value to drive the mode FSM.
+ *
+ * Dead-zone: 2700–3300 (centred on observed rest value ~3000).
+ *
+ *   LEFT  (adc < 2700) → budget goes UP
+ *   RIGHT (adc > 3300) → budget goes DOWN
+ *
+ * Step scales linearly with deflection, capped at 5 per tick.
  * ================================================================ */
-static void joystick_update(void)
+static bool joystick_update(void)
 {
     uint16_t adc = gAdcResult;
 
-    if (adc < (ADC_MID - ADC_DEADZONE) || adc > (ADC_MID + ADC_DEADZONE)) {
-        uint32_t range  = BUDGET_MAX - BUDGET_MIN;
-        uint8_t  budget = (uint8_t)(BUDGET_MIN + (uint32_t)adc * range / ADC_MAX);
-        if (budget < BUDGET_MIN) budget = BUDGET_MIN;
-        if (budget > BUDGET_MAX) budget = BUDGET_MAX;
-        gBudget = budget;
+    if (adc < JOY_DEAD_LOW)
+    {
+        if (adc < JOY_LEFT_FLOOR) adc = JOY_LEFT_FLOOR;
+        uint16_t deflection = JOY_DEAD_LOW - adc;
+        uint16_t full_range = JOY_DEAD_LOW - JOY_LEFT_FLOOR;
+        uint8_t  step = (uint8_t)(1U + (uint32_t)deflection * 4U / full_range);
+        if (step > 5U) step = 5U;
+        uint8_t nb = (uint8_t)(gBudget + step);
+        gBudget = (nb <= BUDGET_MAX) ? nb : BUDGET_MAX;
+        return true;
+    }
+    else if (adc > JOY_DEAD_HIGH)
+    {
+        if (adc > JOY_RIGHT_CEIL) adc = JOY_RIGHT_CEIL;
+        uint16_t deflection = adc - JOY_DEAD_HIGH;
+        uint16_t full_range = JOY_RIGHT_CEIL - JOY_DEAD_HIGH;
+        uint8_t  step = (uint8_t)(1U + (uint32_t)deflection * 4U / full_range);
+        if (step > 5U) step = 5U;
+        gBudget = (gBudget > BUDGET_MIN + step)
+                  ? (uint8_t)(gBudget - step)
+                  : BUDGET_MIN;
+        return true;
+    }
+
+    return false;   /* inside dead-zone */
+}
+
+/* ================================================================
+ * MODE FSM
+ *
+ * Called once per refresh cycle after joystick_update().
+ *
+ *   joy_active == true
+ *     → switch immediately to JOY, reset idle counter
+ *
+ *   joy_active == false  (dead-zone)
+ *     → if already AUTO: stay AUTO
+ *     → if JOY:   start countdown at CD3
+ *     → if CD3:   advance to CD2
+ *     → if CD2:   advance to CD1
+ *     → if CD1:   revert to AUTO
+ *
+ * The header label is repainted on every state change so the
+ * display always reflects the current mode without a full redraw.
+ * ================================================================ */
+static void update_display_mode(bool joy_active)
+{
+    if (joy_active)
+    {
+        gJoyIdleCount = 0;
+        if (gDisplayMode != DISPLAY_MODE_JOY) {
+            gDisplayMode = DISPLAY_MODE_JOY;
+            draw_title_mode();
+        }
+        return;
+    }
+
+    /* Joystick is in dead-zone this cycle */
+    switch (gDisplayMode)
+    {
+        case DISPLAY_MODE_AUTO:
+            /* Nothing to do – already resting */
+            break;
+
+        case DISPLAY_MODE_JOY:
+            gDisplayMode = DISPLAY_MODE_CD3;
+            draw_title_mode();
+            break;
+
+        case DISPLAY_MODE_CD3:
+            gDisplayMode = DISPLAY_MODE_CD2;
+            draw_title_mode();
+            break;
+
+        case DISPLAY_MODE_CD2:
+            gDisplayMode = DISPLAY_MODE_CD1;
+            draw_title_mode();
+            break;
+
+        case DISPLAY_MODE_CD1:
+            gDisplayMode = DISPLAY_MODE_AUTO;
+            draw_title_mode();
+            break;
+
+        default:
+            gDisplayMode = DISPLAY_MODE_AUTO;
+            draw_title_mode();
+            break;
     }
 }
 
@@ -595,14 +724,10 @@ void UART_0_INST_IRQHandler(void)
             uint8_t byte = DL_UART_Main_receiveData(UART_0_INST);
             if (byte == (uint8_t)'\n') {
                 gRxBuf[gRxIdx] = '\0';
-                if (gRxIdx > 0) {
-                    parse_pc_line(gRxBuf);
-                }
+                if (gRxIdx > 0) parse_pc_line(gRxBuf);
                 gRxIdx = 0;
             } else if (byte != (uint8_t)'\r') {
-                if (gRxIdx < RX_BUF_LEN - 1) {
-                    gRxBuf[gRxIdx++] = (char)byte;
-                }
+                if (gRxIdx < RX_BUF_LEN - 1) gRxBuf[gRxIdx++] = (char)byte;
             }
             break;
         }
@@ -626,7 +751,6 @@ int main(void)
     ili9341_init();
 
     draw_screen_skeleton();
-
     uart_send_string("HW_CONSOLE_READY\r\n");
 
     gAdcReady = false;
@@ -635,13 +759,17 @@ int main(void)
 
     while (1)
     {
+        /* ── 1. Read joystick; update budget + mode FSM ── */
+        bool joy_active = false;
         if (gAdcReady) {
-            gAdcReady = false;
-            joystick_update();
+            gAdcReady  = false;
+            joy_active = joystick_update();
             DL_ADC12_enableConversions(ADC12_0_INST);
             DL_ADC12_startConversion(ADC12_0_INST);
         }
+        update_display_mode(joy_active);
 
+        /* ── 2. Fill data from PC or fall back to simulation ── */
         if (!gRxReady) {
             gNoRxCount++;
         }
@@ -651,6 +779,7 @@ int main(void)
             apply_simulation();
         }
 
+        /* ── 3. Render & report ── */
         draw_values();
         uart_send_status();
         delay_ms(REFRESH_MS);

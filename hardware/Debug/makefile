@@ -2,9 +2,7 @@
 # Automatically-generated file. Do not edit!
 ################################################################################
 
-SHELL = cmd.exe
-
-CG_TOOL_ROOT := D:/mspm0_files/ccs/tools/compiler/ti-cgt-armllvm_4.0.4.LTS
+CG_TOOL_ROOT := /home/noobiegg/ti/ccs2040/ccs/tools/compiler/ti-cgt-armllvm_4.0.4.LTS
 
 GEN_OPTS__FLAG := @"./device.opt" 
 GEN_CMDS__FLAG := -Wl,-l"./device_linker.cmd" 
@@ -19,8 +17,8 @@ $(GEN_CMDS__FLAG) \
 
 -include ../makefile.init
 
-RM := DEL /F
-RMDIR := RMDIR /S/Q
+RM := rm -rf
+RMDIR := rm -rf
 
 # All of the sources participating in the build are defined here
 -include sources.mk
@@ -116,21 +114,21 @@ endif
 
 # Add inputs and outputs from these tool invocations to the build variables 
 EXE_OUTPUTS += \
-AMD_hardwre.out 
+main_project.out 
 
 EXE_OUTPUTS__QUOTED += \
-"AMD_hardwre.out" 
+"main_project.out" 
 
 
 # All Target
 all: $(OBJS) $(GEN_CMDS)
-	@$(MAKE) --no-print-directory -Onone "AMD_hardwre.out"
+	@$(MAKE) --no-print-directory -Onone "main_project.out"
 
 # Tool invocations
-AMD_hardwre.out: $(OBJS) $(GEN_CMDS)
+main_project.out: $(OBJS) $(GEN_CMDS)
 	@echo 'Building target: "$@"'
 	@echo 'Invoking: Arm Linker'
-	"D:/mspm0_files/ccs/tools/compiler/ti-cgt-armllvm_4.0.4.LTS/bin/tiarmclang.exe" @"device.opt"  -march=thumbv6m -mcpu=cortex-m0plus -mfloat-abi=soft -mlittle-endian -mthumb -O2 -gdwarf-3 -Wl,-m"AMD_hardwre.map" -Wl,-i"D:/mspm0_files/mspm0_sdk_2_07_00_05/source" -Wl,-i"D:/AMD_hardwre" -Wl,-i"D:/AMD_hardwre/Debug/syscfg" -Wl,-i"D:/mspm0_files/ccs/tools/compiler/ti-cgt-armllvm_4.0.4.LTS/lib" -Wl,--diag_wrap=off -Wl,--display_error_number -Wl,--warn_sections -Wl,--xml_link_info="AMD_hardwre_linkInfo.xml" -Wl,--rom_model -o "AMD_hardwre.out" $(ORDERED_OBJS)
+	"/home/noobiegg/ti/ccs2040/ccs/tools/compiler/ti-cgt-armllvm_4.0.4.LTS/bin/tiarmclang" @"device.opt"  -march=thumbv6m -mcpu=cortex-m0plus -mfloat-abi=soft -mlittle-endian -mthumb -O2 -gdwarf-3 -Wl,-m"main_project.map" -Wl,-i"/home/noobiegg/ti/mspm0_sdk_2_08_00_03/source" -Wl,-i"/home/noobiegg/Documents/AMD_slingshot/hardware" -Wl,-i"/home/noobiegg/Documents/AMD_slingshot/hardware/Debug/syscfg" -Wl,-i"/home/noobiegg/ti/ccs2040/ccs/tools/compiler/ti-cgt-armllvm_4.0.4.LTS/lib" -Wl,--diag_wrap=off -Wl,--display_error_number -Wl,--warn_sections -Wl,--xml_link_info="main_project_linkInfo.xml" -Wl,--rom_model -o "main_project.out" $(ORDERED_OBJS)
 	@echo 'Finished building target: "$@"'
 	@echo ' '
 
