@@ -494,7 +494,8 @@ class HeteroWiseRuntime:
             'rocm_clock_mhz':     m_after['clock_mhz'],
         }
         df = pd.DataFrame([row])
-        df.to_csv(LOG_PATH, mode='a', header=not os.path.exists(LOG_PATH), index=False)
+        write_header = not os.path.exists(LOG_PATH)
+        df.to_csv(LOG_PATH, mode='a', header=write_header, index=False)
 
         # ── Step 6: Feed adaptive engine ─────────────────────────────────────
         if measured_energy is not None:
@@ -536,8 +537,11 @@ class HeteroWiseRuntime:
         print('\n[HeteroWise] Session Summary')
         print('  Total runs:   {}'.format(len(df)))
         print('  Hardware used:')
-        for hw, cnt in df['recommended_hw'].value_counts().items():
-            print('    {}: {}'.format(hw, cnt))
+        if 'recommended_hw' not in df.columns:
+            print('    (column missing - log may have been written without headers; delete {} and re-run)'.format(LOG_PATH))
+        else:
+            for hw, cnt in df['recommended_hw'].value_counts().items():
+                print('    {}: {}'.format(hw, cnt))
 
         valid = df[df['measured_energy_j'].notna()]
         if len(valid) > 0:
